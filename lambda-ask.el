@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Edvin Jakobsson
 
 ;; Author: Edvin Jakobsson <edj7467@gmail.com>
-;; Version: 0.1.0
+;; Version: 0.1.2
 ;; Package-Requires: ((emacs "30.1") (markdown-mode "2.6"))
 ;; Keywords: tools, convenience
 ;; URL: https://github.com/r4tss/lambda-ask

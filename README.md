@@ -1,6 +1,6 @@
 # Lambda-ask
 
-Ask Claude quick questions about the code at point, from Emacs. Lambda-ask runs the `claude` CLI as a read-only subprocess and streams the answer into a side window. It isn't a chat client or an agent. It's meant for "what does this do?", "rewrite this function", and "change this across files, show me a diff".
+Quick, read-only answers from Claude about the code at point. The code and what the language server knows about it go along with the question, so Claude rarely has to look anything up.
 
 It uses your Claude subscription login through `claude -p`, so no API key is needed.
 
