@@ -37,7 +37,6 @@
 ;;; Code:
 
 (require 'diff-mode)
-(require 'json)
 (require 'let-alist)
 (require 'markdown-mode)
 (require 'project)
@@ -157,6 +156,9 @@ context lines match it exactly."
 (defvar lambda-ask-session nil
   "ID of the last conversation, for follow-ups.")
 
+(defvar lambda-ask--process nil
+  "The latest `claude' process, which may have finished.")
+
 (defvar lambda-ask--ctx-tokens nil
   "Input tokens of the last request, i.e. how full the context is now.")
 
@@ -170,7 +172,7 @@ context lines match it exactly."
   "Window point and start, as markers, from when the buffer was last hidden.")
 
 (define-derived-mode lambda-ask-mode gfm-view-mode "λ"
-  "Mode for the *claude* answer buffer."
+  "Mode for the *lambda-ask* answer buffer."
   (setq-local markdown-fontify-code-blocks-natively t)
   ;; Wrap at the window edge, not at `fill-column'.
   (visual-line-mode 1)
@@ -183,8 +185,8 @@ context lines match it exactly."
 (define-key lambda-ask-mode-map "x" #'lambda-ask-todo-toggle)
 
 (defun lambda-ask--buffer (&optional name)
-  "The *claude* buffer, which holds the latest answer, or the one called NAME."
-  (setq name (or name "*claude*"))
+  "The *lambda-ask* buffer, which holds the latest answer, or the one called NAME."
+  (setq name (or name "*lambda-ask*"))
   (or (get-buffer name)
       (with-current-buffer (get-buffer-create name)
         (lambda-ask-mode)
@@ -192,7 +194,7 @@ context lines match it exactly."
 
 (defun lambda-ask--history ()
   "Buffer with every question and answer of the current conversation."
-  (lambda-ask--buffer "*claude-history*"))
+  (lambda-ask--buffer "*lambda-ask-history*"))
 
 (defcustom lambda-ask-side 'right
   "Where the answer window goes.
@@ -447,13 +449,26 @@ naming files that could be outside it is refused."
                               (string-match "^```[ \t]*$" text body))
                  text))
          (unsafe (lambda-ask--unsafe-files diff))
-         (buffer (get-buffer-create "*claude-diff*")))
+         (buffer (get-buffer-create "*lambda-ask-diff*")))
     (lambda-ask--append (lambda-ask--history)
                         (format "%s\n\n```diff\n%s```\n" summary diff))
     (if unsafe
         (message "λ refused: the diff names files outside the project (%s), see M-x lambda-ask-show-history"
                  (string-join unsafe ", "))
       (lambda-ask--review-diff buffer summary diff project))))
+
+(defcustom lambda-ask-evil-diff-keys nil
+  "Non-nil to bind single-letter review keys in the diff buffer, for evil.
+In normal state, a applies a hunk, d drops it, A applies all of them,
+n and p move between hunks and q closes.  Otherwise use `diff-mode's
+own keys, which the mode line lists."
+  :type 'boolean)
+
+(defun lambda-ask--short-key (command)
+  "The shortest key for COMMAND in the current buffer, as a string."
+  (if-let* ((keys (where-is-internal command)))
+      (car (sort (mapcar #'key-description keys) :key #'length))
+    (concat "M-x " (symbol-name command))))
 
 (defun lambda-ask--review-diff (buffer summary diff project)
   "Show SUMMARY and DIFF in BUFFER, set up to apply hunks to PROJECT."
@@ -470,24 +485,31 @@ naming files that could be outside it is refused."
       (setq default-directory project)
       ;; Claude often gets the line counts in hunk headers wrong.
       (diff-fixup-modifs (point-min) (point-max)))
-    ;; Review keys for this buffer only; evil-collection's are behind g.
-    (when (fboundp 'evil-local-set-key)
-      (evil-local-set-key 'normal "a" #'diff-apply-hunk)
-      (evil-local-set-key 'normal "d" #'diff-hunk-kill)
-      (evil-local-set-key 'normal "A" #'diff-apply-buffer)
-      (evil-local-set-key 'normal "n" #'diff-hunk-next)
-      (evil-local-set-key 'normal "p" #'diff-hunk-prev)
-      (evil-local-set-key 'normal "q" #'quit-window))
-    ;; The mode line becomes a key guide.
-    (setq mode-line-format
-          (concat " λ  "
-                  (mapconcat (lambda (key)
-                               (concat (propertize (car key) 'face 'help-key-binding)
-                                       " " (cdr key)))
-                             '(("a" . "apply hunk") ("d" . "drop hunk")
-                               ("A" . "apply all") ("n/p" . "next/prev hunk")
-                               ("q" . "close"))
-                             "   ")))
+    ;; Read-only, so diff-mode's single-letter keys work.
+    (read-only-mode 1)
+    (let ((evil (and lambda-ask-evil-diff-keys (fboundp 'evil-local-set-key)))
+          (keys '((diff-apply-hunk "a" "apply hunk")
+                  (diff-hunk-kill "d" "drop hunk")
+                  (diff-apply-buffer "A" "apply all")
+                  (diff-hunk-next "n" "next hunk")
+                  (diff-hunk-prev "p" "prev hunk")
+                  (quit-window "q" "close"))))
+      ;; Review keys for this buffer only; evil-collection's are behind g.
+      (when evil
+        (dolist (key keys)
+          (evil-local-set-key 'normal (nth 1 key) (car key))))
+      ;; The mode line becomes a key guide, with diff-mode's own keys
+      ;; when the evil ones are off.
+      (setq mode-line-format
+            (concat " λ  "
+                    (mapconcat (lambda (key)
+                                 (concat (propertize
+                                          (if evil
+                                              (nth 1 key)
+                                            (lambda-ask--short-key (car key)))
+                                          'face 'help-key-binding)
+                                         " " (nth 2 key)))
+                               keys "   "))))
     (goto-char (point-min)))
   (pop-to-buffer buffer)
   (message "λ changes ready for review"))
@@ -539,7 +561,7 @@ naming files that could be outside it is refused."
 
 (defun lambda-ask--handle (proc json)
   "Act on one JSON event from PROC.
-Asks stream their answer into *claude*; rewrites and changes wait for
+Asks stream their answer into *lambda-ask*; rewrites and changes wait for
 the final message and put it in the code or in a diff.
 The usage events (`rate_limit_event' and the result's `modelUsage') are
 not documented, so a missing or odd field there is ignored quietly."
@@ -708,7 +730,7 @@ With RESUME, continue that session.  With TARGET, a (BEG . END) pair
 of markers, replace that code with the answer; with TARGET `diff',
 show the answer's diff for review.  A non-nil TODO lets Claude update the
 conversation's TODO list (see `lambda-ask-todo-rule')."
-  (when (process-live-p (get-process "claude"))
+  (when (process-live-p lambda-ask--process)
     (user-error "Claude is still thinking"))
   ;; Fail before changing anything if there is no suitable project.
   (lambda-ask--project)
@@ -727,7 +749,7 @@ conversation's TODO list (see `lambda-ask-todo-rule')."
                                         heading))
     (if target
         (message (if (eq target 'diff) "λ drafting changes…" "λ rewriting…"))
-      ;; *claude* only ever holds the latest question and answer.
+      ;; *lambda-ask* only ever holds the latest question and answer.
       (lambda-ask--erase (lambda-ask--buffer))
       (lambda-ask--append (lambda-ask--buffer) heading)
       (lambda-ask--todo-render)
@@ -738,30 +760,32 @@ conversation's TODO list (see `lambda-ask-todo-rule')."
                             lambda-ask-library-dirs))
          (default-directory lambda-ask-dir)
          (proc (make-process
-                :name "claude" :noquery t :connection-type 'pipe
+                :name "lambda-ask" :noquery t :connection-type 'pipe
                 ;; "--restricted" ignores settings files and confines the
                 ;; file tools to the working directories, "--safe-mode"
                 ;; disables CLAUDE.md, hooks, skills and plugins, and
                 ;; "--permission-prompts none" denies anything that would
                 ;; prompt, since nobody can answer in print mode.
-                :command `(,lambda-ask-executable "-p"
-                                                  "--model" ,lambda-ask-model
-                                                  "--output-format" "stream-json" "--verbose"
-                                                  "--include-partial-messages"
-                                                  "--system-prompt"
-                                                  ,(concat (if lambda-ask-teacher
-                                                               lambda-ask-teacher-prompt
-                                                             lambda-ask-system-prompt)
-                                                           "\n\nLibrary sources: "
-                                                           (if libraries (string-join libraries ", ") "none"))
-                                                  "--restricted" "--safe-mode"
-                                                  "--strict-mcp-config" "--disable-slash-commands"
-                                                  "--permission-prompts" "none"
-                                                  "--add-dir" ,project ,@libraries
-                                                  ,@(when resume (list "--resume" resume))
-                                                  "--tools" "Read" "Grep" "Glob")
+                :command
+                `(,lambda-ask-executable
+                  "-p"
+                  "--model" ,lambda-ask-model
+                  "--output-format" "stream-json" "--verbose"
+                  "--include-partial-messages"
+                  "--system-prompt"
+                  ,(concat (if lambda-ask-teacher
+                               lambda-ask-teacher-prompt
+                             lambda-ask-system-prompt)
+                           "\n\nLibrary sources: "
+                           (if libraries (string-join libraries ", ") "none"))
+                  "--restricted" "--safe-mode"
+                  "--strict-mcp-config" "--disable-slash-commands"
+                  "--permission-prompts" "none"
+                  "--add-dir" ,project ,@libraries
+                  ,@(when resume (list "--resume" resume))
+                  "--tools" "Read" "Grep" "Glob")
                 :filter #'lambda-ask--filter
-                :stderr (get-buffer-create "*claude-err*")
+                :stderr (get-buffer-create "*lambda-ask-err*")
                 :sentinel (lambda (proc event)
                             (cond ((string-prefix-p "finished" event))
                                   ;; Stopped with `lambda-ask-stop'.
@@ -771,9 +795,10 @@ conversation's TODO list (see `lambda-ask-todo-rule')."
                                    (message "λ stopped"))
                                   (t
                                    (lambda-ask--insert
-                                    (format "\nclaude %s, see *claude-err*\n"
+                                    (format "\nclaude %s, see *lambda-ask-err*\n"
                                             (string-trim event))
                                     'error)))))))
+    (setq lambda-ask--process proc)
     (process-put proc :partial "")
     (process-put proc :target target)
     (process-put proc :project project)
@@ -805,7 +830,7 @@ code and language server info that `lambda-ask--read' captured."
 (defun lambda-ask--check-followup ()
   "Signal a `user-error' unless a follow-up can be asked now.
 Called before prompting, so no one types a question for nothing."
-  (when (process-live-p (get-process "claude"))
+  (when (process-live-p lambda-ask--process)
     (user-error "Claude is still thinking"))
   (unless lambda-ask-session
     (user-error "No conversation to follow up on"))
@@ -885,7 +910,7 @@ Starts a new conversation, since one keeps the prompt it started with."
 (defun lambda-ask-stop ()
   "Stop Claude mid-answer or mid-rewrite."
   (interactive)
-  (if-let* ((proc (get-process "claude"))
+  (if-let* ((proc lambda-ask--process)
             ((process-live-p proc)))
       (kill-process proc)
     (message "λ not thinking")))

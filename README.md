@@ -67,7 +67,8 @@ If you use evil, you'll probably want the answer buffers in motion state:
 
 ```elisp
 (with-eval-after-load 'lambda-ask
-  (evil-set-initial-state 'lambda-ask-mode 'motion))
+  (evil-set-initial-state 'lambda-ask-mode 'motion)
+  (setq lambda-ask-evil-diff-keys t))
 ```
 
 ## Commands
@@ -91,7 +92,9 @@ In teacher mode, `lambda-ask-rewrite` and `lambda-ask-change` are refused.
 
 ### Reviewing a change
 
-`lambda-ask-change` opens a `*claude-diff*` buffer in `diff-mode`. With evil, these keys are set in that buffer:
+`lambda-ask-change` opens a read-only `*lambda-ask-diff*` buffer in `diff-mode`, with its keys for reviewing listed in the mode line: `C-c C-a` applies a hunk, `k` drops one, `n` / `p` move between them and `q` closes. A diff that names files outside the project is refused; it stays in the history buffer.
+
+With evil, you can set `lambda-ask-evil-diff-keys` to `t` to get these keys in normal state in that buffer:
 
 | Key | Action |
 | --- | --- |
@@ -100,8 +103,6 @@ In teacher mode, `lambda-ask-rewrite` and `lambda-ask-change` are refused.
 | `A` | Apply all |
 | `n` / `p` | Next / previous hunk |
 | `q` | Close |
-
-Without evil, use the usual `diff-mode` commands, such as `C-c C-a` to apply a hunk.
 
 ## Customization
 
@@ -115,6 +116,7 @@ Without evil, use the usual `diff-mode` commands, such as `C-c C-a` to apply a h
 | `lambda-ask-library-dirs` | Cargo, Go, Python, `/usr/include` | Library sources outside the project that Claude may read. Wildcards allowed. |
 | `lambda-ask-side` | `right` | Where the answer window goes: `right` or `bottom`. |
 | `lambda-ask-teacher` | `nil` | Non-nil for teacher mode. |
+| `lambda-ask-evil-diff-keys` | `nil` | Non-nil for single-letter evil keys in the diff buffer. |
 | `lambda-ask-max-hovers` | `40` | Most distinct symbols to look up per request. |
 | `lambda-ask-hover-chars` | `300` | Longest hover text to send for one symbol. |
 
